@@ -1,0 +1,24 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+*.exe
+*.dll
+*.so
+*.dylib
+*.rmeta
+
+# Application logs & runtime output
+*.log
+debug_vectis.log
+gui_error.log
+panic.log
+
+# Local test / isolation folders
+.sentry_quarantine/
+sentry.manifest
+
+# OS generated files
+.DS_Store
+Thumbs.db
+desktop.ini

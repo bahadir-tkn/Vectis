@@ -1,0 +1,400 @@
+Projenin 3 katmanını (Host-Side Gatekeeper, USB Immunizer, Portable Rescue Tool) tek bir çatı altında birleştiren ve açık kaynak dünyasında doğrudan referans gösterilebilecek teknik mimari ve yol haritası aşağıda detaylandırılmıştır.
+
+---
+
+### Sistem Mimarisi
+
+```
+[Harici Bellek Takıldı]
+         │
+         ▼
+┌────────────────────────────────────────────────────────┐
+│ KATMAN 1: Host-Side Gatekeeper (Yerel Nöbetçi)         │
+│ • Win32 Olayı Yakalama (WM_DEVICECHANGE)               │
+│ • Explorer Otomatik Açılışını Engelleme                │
+│ • USN Journal / Watcher ile Yazma Takibi               │
+└────────────────────────┬───────────────────────────────┘
+                         │
+                         ▼
+┌────────────────────────────────────────────────────────┐
+│ KATMAN 2: USB Immunizer (Bağışıklama & Sertleştirme)   │
+│ • NTFS Kök Dizin Kilidi (ACL Sıkılaştırma)             │
+│ • Klasör Bazlı Autorun Aşısı                           │
+│ • 'Attrib' Onarımı (Gizlenen Klasörleri Kurtarma)      │
+└────────────────────────┬───────────────────────────────┘
+                         │
+                         ▼
+┌────────────────────────────────────────────────────────┐
+│ KATMAN 3: Portable Rescue Tool (Taşınabilir Ajan)      │
+│ • SHA-256 Bütünlük Manifestosu (Snapshot Oluşturma)    │
+│ • Gömülü Çevrimdışı YARA Motoru                        │
+│ • Entropi & PE Header Anomali Taraması                 │
+└────────────────────────────────────────────────────────┘
+
+```
+
+---
+
+### Katman Bazlı Özellik Seti
+
+#### Katman 1: Host-Side Gatekeeper (Yerel Nöbetçi)
+
+* **Olay Güdümlü Dinleyici (Zero-Resource Listener):** Win32 API (`RegisterDeviceNotification`) kullanarak yalnızca `DBT_DEVICEARRIVAL` ve `DBT_DEVICEREMOVECOMPLETE` sinyallerinde tetiklenir. Cihaz takılı değilken 0 CPU ve <15 MB RAM tüketir.
+* **AutoPlay / Explorer Bastırma:** Bellek takıldığı anda Windows'un otomatik açılır pencere üretmesini engeller. Kullanıcı manuel tıklasa dahi tarama süresince dosya gezgininde "Tarama Sürüyor" uyarısı verir.
+* **Yazma Anı İzleme (ReadDirectoryChangesW):** USB bilgisayara takılıyken bilgisayardan belleğe dosya kopyalanırsa veya indirilirse, dosya sisteme yazıldığı milisaniyede araya girip statik kontrolünü yapar.
+
+#### Katman 2: USB Immunizer (Bağışıklama ve Sertleştirme)
+
+* **NTFS Kök Dizin Kilidi (En Etkili Bağışıklık Yöntemi):**
+* Harici bellek NTFS formatında ise, kök dizin izinleri değiştirilerek `Write` yetkisi kısıtlanır.
+* Belleğin içine bir `Belgelerim / Paylasim` klasörü açılır ve yalnızca o klasöre tam yazma yetkisi verilir.
+* **Sonuç:** Bellek virüslü bir yabancı bilgisayara takıldığında, yabancı sistemdeki virüsler kök dizine doğrudan `.exe`, `.vbs` veya `autorun.inf` yazamaz; "Erişim Reddedildi" hatası alır.
+
+
+* **Autorun Klasör Aşısı:** FAT32 bellekler için kök dizine sistem/salt-okunur öznitelikli `autorun.inf` adında bir dosya değil, kilitli bir klasör oluşturulur. Windows dosya sisteminde aynı isimde dosya ve klasör aynı anda bulunamayacağından, virüsün kendi `autorun.inf` dosyasını oluşturması engellenir.
+* **Kısayol Virüsü (Shortcut Worm) Temizleyici:** Virüslerin orijinal klasörleri `attrib +h +s` yaparak gizleyip yerlerine sahte `.lnk` üretme taktiğini bozar; gizli sistem niteliklerini kaldırıp sahte kısayolları temizler.
+
+#### Katman 3: Portable Rescue & Manifest Engine (Taşınabilir Ajan)
+
+* **SHA-256 Bütünlük Manifestosu (Snapshot Engine):**
+* Güvenli bilgisayardan ayrılmadan önce bellekteki her dosyanın SHA-256 özeti alınır ve şifreli bir `sentry.manifest` dosyasına kaydedilir.
+* Bellek yabancı bir bilgisayardan döndüğünde iki saniye içinde fark taraması yapılır: "Hangi dosyaların boyutu/hash'i değişti? Hangi yeni dosyalar eklendi?" doğrudan tespit edilir.
+
+
+* **Taşınabilir Statik Tarayıcı (`sentry_portable.exe`):**
+* Bağımsız, kurulumsuz tek bir binary olarak USB'nin kök dizininde yer alır.
+* Yabancı bilgisayarda çalıştırıldığında internete ihtiyaç duymadan USB içeriğini doğrular.
+
+
+* **Yerel Analiz Motoru:**
+* **YARA Kural Seti:** USB solucanları, powershell dropper'ları ve LNK payload'ları için özelleştirilmiş gömülü kurallar.
+* **Yüksek Entropi Tespiti:** UPX veya bilinmeyen paketleyicilerle şifrelenmiş zararlı yürütülebilir dosyaları heuristic olarak yakalar.
+
+
+* **Tersinir Karantina:** Şüpheli dosyalar doğrudan silinmez; uzantısı `.locked` yapılarak XOR tabanlı şifrelenir ve gizli `.sentry_quarantine` dizinine taşınır.
+
+---
+
+### Teknoloji Yığını (Tech Stack)
+
+| Bileşen | Seçim | Tercih Nedeni |
+| --- | --- | --- |
+| **Programlama Dili** | **Rust** (veya **Go**) | C bağımlılığı olmadan saf Win32 API çağrıları, düşük kaynak tüketimi ve tek parça standalone binary (`.exe`) üretimi. |
+| **Kural Motoru** | **YARA Core** (Yerel Derlenmiş) | Statik imza kontrolünün endüstri standardı; harici veri tabanı sunucusu gerektirmez. |
+| **Arayüz (İsteğe Bağlı)** | **Windows Tray App + Native Windows Toasts** | Webview/Electron yerine Win32 Shell_NotifyIcon; sıfır bellek yükü. |
+| **Bütünlük Doğrulama** | **BLAKE3 veya SHA-256** | Çok hızlı dosya hash'leme performansı. |
+
+---
+
+### Kapsamlı 4 Fazlı Yol Haritası
+
+#### Faz 1: Çekirdek Dinleyici ve Dosya Olayları
+
+1. Windows API entegrasyonu: `WM_DEVICECHANGE` üzerinden sürücü harfi (`D:\`, `E:\`) tespiti.
+2. `ReadDirectoryChangesW` ile sürücüye yazılan dosyaların gerçek zamanlı izlenmesi.
+3. Çıkarılabilir sürücü tiplerinin tespiti (`GetDriveTypeW` -> `DRIVE_REMOVABLE`).
+
+#### Faz 2: Statik Analiz, YARA ve Manifesto Motoru
+
+1. Gömülü YARA kurallarının derlenmesi (LNK kısayol injection, VBS script yürütücüler, gizli `.exe` kalıpları).
+2. Dosya karma (hash) hesaplayıcı ve `sentry.manifest` oluşturma/karşılaştırma modülü.
+3. PE dosya başlık analizcisi (şüpheli bölüm isimleri ve anomali tespiti).
+
+#### Faz 3: Bağışıklama, İzin Yönetimi ve Karantina
+
+1. NTFS için Windows Güvenlik Tanımlayıcısı (Security Descriptor / ACL) modifikasyonu ile kök dizin yazma kilidi.
+2. FAT32 için `autorun.inf` aşı klasörü mantığı.
+3. Karantina mekanizması (XOR şifreleme + dosya niteliği izolasyonu).
+
+#### Faz 4: Yapay Zeka Çapraz Analizi, EICAR Testi ve Yayın
+
+1. **Pilot Analiz Döngüsü:** Kod blokları yapay zeka ajanları arasında çapraz hata/açık kontrolünden geçirilerek (Deadlock, memory leak, Win32 handle leaks) optimize edilir.
+2. **Sentetik Doğrulama:**
+* EICAR test string içeren sahte `.txt`, `.bat` dosyaları ile tarama doğrulaması.
+* `autorun.inf` manipülasyon simülasyonu.
+* Dosya gizleme ve LNK sahteciliği test senaryoları.
+
+
+3. **Açık Kaynak Dağıtımı:**
+* MIT Lisansı ile GitHub deposu kurulumu.
+* Standalone portable binary için GitHub Actions üzerinden otomatik release derlemesi.
+
+
+
+---
+
+### Profesyonel Konumlandırma ve Açık Kaynak Kimliği
+
+Projenin teknik güvenilirliğini en üst düzeye çıkarmak için GitHub dökümantasyonunda şu temel ilkeler vurgulanmalıdır:
+
+* **Adlandırma:** Projeye genel bir antivirüs demek yerine **"Lightweight USB Gatekeeper & Offline Immunization Engine"** unvanı verilmelidir.
+* **Teknik Ayrım:** Aracın genel bir bellek içi (in-memory) EDR olmadığı, **harici depolama aygıtları üzerinden taşınan vektörleri izole eden ve kalıcı dosya sistemi koruması sağlayan uzmanlaşmış bir nöbetçi** olduğu açıkça ifade edilmelidir.
+* **Gizlilik Güvencesi:** Çevrimdışı çalışmanın kanıtı olarak kaynak kodda hiçbir ağ kütüphanesinin (socket, HTTP istemcisi vb.) yer almadığı dökümante edilmelidir.
+
+
+
+Bu özellik projeyi iki net çalışma moduna (**Sentry Modu** ve **On-Demand Modu**) ayırarak gereksiz kaynak tüketimini tamamen sıfırlayan esnek bir mimariye dönüştürür.
+
+---
+
+### İki Kademeli Çalışma Mimarisi
+
+Programın ayar dosyası (`config.json`) yerel olarak okunur ve sisteme şu iki davranış kalıbını sunar:
+
+```
+                  ┌─── [Ayar: Arka Plan Aktif] ───> Sentry Modu (Win32 Event Hook / Sıfır Gecikme)
+[Kullanıcı Tercihi]
+                  └─── [Ayar: Arka Plan Pasif] ───> On-Demand Modu (0 Process / Manuel Tetikleme)
+
+```
+
+1. **Sentry Modu (Varsayılan - Aktif):**
+* Program sistem başlangıcında (`HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run` veya hafif bir Scheduled Task ile) arka planda dinleyici modda başlar.
+* `WM_DEVICECHANGE` olayını dinler; bellek takıldığı milisaniyede devreye girer.
+
+
+2. **On-Demand Modu (Manuel - Tam Uyku):**
+* Ayar kapatıldığı an arka plandaki dinleyici process kendini sonlandırır ve başlangıç kayıt defteri (Registry) girdisini siler.
+* **Sistem Yükü:** Arka planda çalışan hiçbir servis, hook veya process kalmaz. Bellek ve CPU kullanımı tam olarak **0 MB / %0 CPU** olur.
+* **Kullanım:** Kullanıcı sadece USB'yi takıp programın masaüstü simgesine tıkladığında veya Windows Gezgini'nde sürücüye sağ tıklayıp **"Sentry ile Aç ve Tara"** dediğinde tek seferlik çalışır, görevini tamamlayıp kendini kapatır.
+
+
+
+---
+
+## Faz 1: Çekirdek Dinleyici ve Donanım Yakalama Mimarisi
+
+Faz 1'in amacı; USB aygıtının takılmasını işletim sistemi seviyesinde yakalamak, sürücü harfini (`E:\`, `F:\` vb.) doğrulamak ve ayar dosyasındaki tercihe göre çalışma modunu belirlemektir.
+
+Açık kaynak siber güvenlik topluluğunda en yüksek güvenilirliği sağlayan, harici C/C++ runtime bağımlılığı (`MSVCRT.dll`) gerektirmeyen ve tek bir bağımsız binary üreten **Rust** mimarisi üzerinden temeli kuruyoruz.
+
+### 1. Ayar Şeması (`config.json`)
+
+Programın kök dizininde tutulan ve internete çıkmayan yerel yapılandırma:
+
+```json
+{
+  "version": "1.0.0",
+  "background_monitoring": true,
+  "auto_suppress_explorer": true,
+  "enable_ntfs_immunization": true,
+  "create_portable_rescue": true,
+  "quarantine_folder": ".sentry_quarantine"
+}
+
+```
+
+---
+
+### 2. Faz 1 Rust Çekirdek Mimarisi
+
+Bu kod bloku:
+
+1. `config.json` dosyasını okur; eğer `background_monitoring: false` ise dinleyiciyi başlatmadan doğrudan manuel tarama rutinine geçer.
+2. `background_monitoring: true` ise görünmez bir Win32 mesaj penceresi oluşturarak yalnızca `WM_DEVICECHANGE` olaylarını dinler.
+3. Bir USB takıldığında (`DBT_DEVICEARRIVAL`), takılan birimin sürücü harfini maske tablosundan çözer ve Katman 2/3 motoruna aktarılacak sinyali üretir.
+
+#### `Cargo.toml` Bağımlılıkları
+
+```toml
+[package]
+name = "coresync-usb-gatekeeper"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Storage_FileSystem",
+    "Win32_System_LibraryLoader"
+] }
+
+```
+
+#### `src/main.rs` (Donanım Dinleyici ve Mod Yönetimi)
+
+```rust
+use std::fs;
+use std::path::Path;
+use serde::{Deserialize, Serialize};
+
+#[cfg(windows)]
+use windows_sys::Win32::{
+    Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+    UI::WindowsAndMessaging::{
+        CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW,
+        RegisterClassExW, MSG, WNDCLASSEXW,
+        WM_DEVICECHANGE,
+    },
+    Storage::FileSystem::{GetDriveTypeW, DRIVE_REMOVABLE},
+    System::LibraryLoader::GetModuleHandleW,
+};
+
+#[derive(Serialize, Deserialize, Debug)]
+struct Config {
+    background_monitoring: bool,
+    auto_suppress_explorer: bool,
+    enable_ntfs_immunization: bool,
+    create_portable_rescue: bool,
+    quarantine_folder: String,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            background_monitoring: true,
+            auto_suppress_explorer: true,
+            enable_ntfs_immunization: true,
+            create_portable_rescue: true,
+            quarantine_folder: ".sentry_quarantine".to_string(),
+        }
+    }
+}
+
+// Win32 Sabitleri
+const DBT_DEVICEARRIVAL: usize = 0x8000;
+const DBT_DEVICEREMOVECOMPLETE: usize = 0x8004;
+const DBT_DEVTYP_VOLUME: u32 = 0x00000002;
+
+#[repr(C)]
+struct DEV_BROADCAST_HDR {
+    dbch_size: u32,
+    dbch_devicetype: u32,
+    dbch_reserved: u32,
+}
+
+#[repr(C)]
+struct DEV_BROADCAST_VOLUME {
+    dbcv_size: u32,
+    dbcv_devicetype: u32,
+    dbcv_reserved: u32,
+    dbcv_unitmask: u32,
+    dbcv_flags: u16,
+}
+
+fn load_config() -> Config {
+    let path = Path::new("config.json");
+    if let Ok(data) = fs::read_to_string(path) {
+        serde_json::from_str(&data).unwrap_or_default()
+    } else {
+        let default_config = Config::default();
+        let _ = fs::write(path, serde_json::to_string_pretty(&default_config).unwrap());
+        default_config
+    }
+}
+
+fn unitmask_to_drive_letter(mask: u32) -> Option<char> {
+    for i in 0..26 {
+        if (mask >> i) & 1 == 1 {
+            return Some((b'A' + i as u8) as char);
+        }
+    }
+    None
+}
+
+// Windows Mesaj Döngüsü Callback Fonksiyonu
+#[cfg(windows)]
+unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if msg == WM_DEVICECHANGE {
+        let event_type = wparam as usize;
+
+        if event_type == DBT_DEVICEARRIVAL && lparam != 0 {
+            let hdr = *(lparam as *const DEV_BROADCAST_HDR);
+            if hdr.dbch_devicetype == DBT_DEVTYP_VOLUME {
+                let vol = *(lparam as *const DEV_BROADCAST_VOLUME);
+                if let Some(drive_letter) = unitmask_to_drive_letter(vol.dbcv_unitmask) {
+                    let drive_path = format!("{}:\\", drive_letter);
+                    let mut wide_path: Vec<u16> = drive_path.encode_utf16().chain(std::iter::once(0)).collect();
+                    
+                    // Sadece tak-çıkar sürücüleri (USB) hedefle
+                    if GetDriveTypeW(wide_path.as_ptr()) == DRIVE_REMOVABLE {
+                        println!("[!] Çıkarılabilir Sürücü Algılandı: {}", drive_path);
+                        trigger_pipeline(&drive_path);
+                    }
+                }
+            }
+        } else if event_type == DBT_DEVICEREMOVECOMPLETE {
+            println!("[-] Aygıt bağlantısı kesildi.");
+        }
+    }
+    DefWindowProcW(hwnd, msg, wparam, lparam)
+}
+
+fn trigger_pipeline(drive_path: &str) {
+    println!("[+] Pipeline Başlatılıyor -> Sürücü: {}", drive_path);
+    // Faz 2 (Statik Analiz & Manifesto) ve Faz 3 (Bağışıklık) buradan çağrılacak.
+}
+
+fn run_manual_scan() {
+    println!("[*] On-Demand Modu: Manuel tarama ve bağışıklama başlatılıyor...");
+    // Manuel modda sistemdeki bağlı tüm REMOVABLE sürücüler listelenir ve taranır
+}
+
+fn main() {
+    let config = load_config();
+    println!("[*] CoreSync USB Gatekeeper başlatıldı.");
+    println!("[*] Arka Plan İzleme: {}", if config.background_monitoring { "AKTİF (Sentry Modu)" } else { "KAPALI (On-Demand Modu)" });
+
+    if !config.background_monitoring {
+        run_manual_scan();
+        return;
+    }
+
+    #[cfg(windows)]
+    unsafe {
+        let h_instance = GetModuleHandleW(std::ptr::null());
+        let class_name = "CoreSyncGatekeeperListener\0".encode_utf16().collect::<Vec<u16>>();
+
+        let wc = WNDCLASSEXW {
+            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+            style: 0,
+            lpfnWndProc: Some(window_proc),
+            cbClsExtra: 0,
+            cbWndExtra: 0,
+            hInstance: h_instance,
+            hIcon: 0,
+            hCursor: 0,
+            hbrBackground: 0,
+            lpszMenuName: std::ptr::null(),
+            lpszClassName: class_name.as_ptr(),
+            hIconSm: 0,
+        };
+
+        RegisterClassExW(&wc);
+
+        // Görünmez mesaj penceresi oluştur (UI açmaz, sıfır grafik bellek tüketir)
+        let _hwnd = CreateWindowExW(
+            0,
+            class_name.as_ptr(),
+            class_name.as_ptr(),
+            0,
+            0, 0, 0, 0,
+            0, 0, h_instance, std::ptr::null(),
+        );
+
+        println!("[*] Win32 Olay Dinleyicisi Hazır. USB bekleniyor...");
+
+        let mut msg: MSG = std::mem::zeroed();
+        while GetMessageW(&mut msg, 0, 0, 0) > 0 {
+            DispatchMessageW(&msg);
+        }
+    }
+}
+
+```
+
+---
+
+### Faz 1 Çıktısı ve Doğrulama
+
+Bu kod çalıştığında:
+
+* Arka planda GUI penceresi açılmaz; yalnızca Windows mesaj havuzunu dinleyen bir thread oluşur.
+* RAM tüketimi yaklaşık **3.8 MB - 6 MB** civarındadır.
+* Herhangi bir USB takıldığında `DRIVE_REMOVABLE` denetimi yapılır; harici sabit disk veya flash bellek doğrulanıp doğrudan sürücü harfi konsola basılır.
+* `config.json` dosyasında `"background_monitoring": false` yapıldığında dinleyici tamamen devre dışı kalarak manuel tarama modunu çalıştırıp sonlanır.

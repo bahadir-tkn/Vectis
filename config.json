@@ -1,0 +1,10 @@
+{
+  "version": "1.0.0",
+  "background_monitoring": false,
+  "auto_suppress_explorer": false,
+  "enable_ntfs_immunization": false,
+  "create_portable_rescue": false,
+  "quarantine_folder": ".sentry_quarantine",
+  "entropy_threshold": 7.2,
+  "max_scan_file_size_mb": 64
+}

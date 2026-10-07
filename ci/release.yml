@@ -1,0 +1,91 @@
+name: CoreSync Release Build & CI/CD Pipeline
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-C target-cpu=generic"
+
+jobs:
+  test:
+    name: Air-Gapped Security & Integration Test Suite
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run Unit & Integration Tests
+        run: cargo test --verbose
+
+      - name: Run Synthetic Test Suite (EICAR, RTLO, Attrib, Vaccine)
+        run: cargo run --release -- --test-suite
+
+  build-release:
+    name: Build Minimized Standalone Binary
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Optimized Release Binary
+        run: |
+          cargo build --release
+          Get-Item target\release\Vectis.exe | Select-Object Name, Length, LastWriteTime
+
+      - name: Generate FIPS 180-4 SHA-256 Checksums
+        shell: pwsh
+        run: |
+          $binPath = "target\release\Vectis.exe"
+          $hash = (Get-FileHash -Path $binPath -Algorithm SHA256).Hash.ToLower()
+          "$hash  Vectis.exe" | Out-File -Encoding utf8 "target\release\SHA256SUMS.txt"
+          Write-Host "Binary SHA-256: $hash"
+          Get-Content "target\release\SHA256SUMS.txt"
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vectis-windows-x64
+          path: |
+            target/release/Vectis.exe
+            target/release/SHA256SUMS.txt
+            config.json
+            README.md
+            LICENSE
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/release/Vectis.exe
+            target/release/SHA256SUMS.txt
+          generate_release_notes: true
+          draft: false
+          prerelease: false

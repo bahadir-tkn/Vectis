@@ -1,0 +1,771 @@
+import { CheckBox, ScrollView } from "std-widgets.slint";
+
+export struct DriveItem {
+    path: string,
+    description: string,
+    is_removable: bool,
+    is_immunized: bool,
+    fs_type: string,
+}
+
+export struct QuarantineItem {
+    id: string,
+    original_path: string,
+    threat_level: string,
+    threat_reason: string,
+    quarantined_at: string,
+    sha256_short: string,
+}
+
+export struct ScanSummaryUI {
+    total_scanned: int,
+    clean_count: int,
+    suspicious_count: int,
+    critical_count: int,
+    status_text: string,
+    last_target: string,
+    is_running: bool,
+}
+
+export component AppWindow inherits Window {
+    title: "Vectis - USB Güvenliği";
+    width: 340px;
+    height: 440px;
+    background: #0a0e17;
+    default-font-family: "Segoe UI";
+
+    // Durum Değişkenleri
+    in-out property <[DriveItem]> drives: [];
+    in-out property <int> selected_drive_index: 0;
+    in-out property <string> selected_drive_path: "";
+    in-out property <DriveItem> current_drive;
+    in-out property <[QuarantineItem]> quarantine_list: [];
+    in-out property <ScanSummaryUI> scan_summary: {
+        total_scanned: 0,
+        clean_count: 0,
+        suspicious_count: 0,
+        critical_count: 0,
+        status_text: "Sistem hazır. USB bellek bekleniyor.",
+        last_target: "",
+        is_running: false,
+    };
+
+    in-out property <bool> auto_protect: true;
+    in-out property <int> active_view: 0; // 0: Koruma, 1: Karantina, 2: Ayarlar
+
+    // Ayarlar
+    in-out property <bool> cfg_background_monitoring: true;
+    in-out property <bool> cfg_auto_suppress_explorer: true;
+    in-out property <bool> cfg_enable_ntfs_immunization: true;
+    in-out property <bool> cfg_create_portable_rescue: true;
+
+    // Callback'ler
+    callback quick_action_requested(string);
+    callback toggle_protection_requested(string);
+    callback clean_shortcuts_requested(string);
+    callback refresh_drives_requested();
+    callback restore_quarantine_requested(string, string);
+    callback delete_quarantine_requested(string, string);
+    callback toggle_auto_protect_requested(bool);
+    callback update_config_requested(bool, bool, bool, bool);
+    callback minimize_to_tray_requested();
+
+    VerticalLayout {
+        padding: 0px;
+        spacing: 0px;
+
+        // ====================================================================
+        // 1. BAŞLIK ÇUBUĞU (38px)
+        // ====================================================================
+        Rectangle {
+            height: 38px;
+            background: #0f172a;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                alignment: space-between;
+
+                // Sol: Logo & Başlık
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+
+                    Rectangle {
+                        width: 22px;
+                        height: 22px;
+                        border-radius: 5px;
+                        background: root.current_drive.path != "" ? 
+                                    (root.current_drive.is_immunized ? #10b981 : #f59e0b) : 
+                                    #059669;
+                        y: 8px;
+
+                        Text {
+                            text: "V";
+                            font-size: 12px;
+                            font-weight: 900;
+                            color: #ffffff;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    Text {
+                        text: "VECTIS";
+                        font-size: 13px;
+                        font-weight: 800;
+                        color: #f8fafc;
+                        letter-spacing: 0.5px;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Sağ: Yenile ve Tepsiye Küçült Butonları
+                HorizontalLayout {
+                    spacing: 4px;
+                    alignment: end;
+
+                    // Yenile
+                    Rectangle {
+                        width: 26px;
+                        height: 26px;
+                        border-radius: 5px;
+                        background: btn_r.has-hover ? #1e293b : transparent;
+                        y: 6px;
+
+                        btn_r := TouchArea {
+                            clicked => { root.refresh_drives_requested(); }
+                        }
+
+                        Text {
+                            text: "🔄";
+                            font-size: 11px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    // Tepsiye Küçült (_)
+                    Rectangle {
+                        width: 26px;
+                        height: 26px;
+                        border-radius: 5px;
+                        background: btn_m.has-hover ? #1e293b : transparent;
+                        y: 6px;
+
+                        btn_m := TouchArea {
+                            clicked => { root.minimize_to_tray_requested(); }
+                        }
+
+                        Text {
+                            text: "—";
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: #94a3b8;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ====================================================================
+        // 2. SEKMELER (32px)
+        // ====================================================================
+        Rectangle {
+            height: 32px;
+            background: #090d16;
+
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 8px;
+                spacing: 4px;
+
+                // Sekme 0: Koruma
+                Rectangle {
+                    height: 26px;
+                    border-radius: 5px;
+                    background: root.active_view == 0 ? #1e293b : transparent;
+                    y: 3px;
+
+                    TouchArea {
+                        clicked => { root.active_view = 0; }
+                    }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 4px;
+                        Text {
+                            text: "🛡️";
+                            font-size: 10px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "Koruma";
+                            font-size: 11px;
+                            font-weight: root.active_view == 0 ? 700 : 500;
+                            color: root.active_view == 0 ? #f8fafc : #94a3b8;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // Sekme 1: Karantina
+                Rectangle {
+                    height: 26px;
+                    border-radius: 5px;
+                    background: root.active_view == 1 ? #1e293b : transparent;
+                    y: 3px;
+
+                    TouchArea {
+                        clicked => { root.active_view = 1; }
+                    }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 4px;
+                        Text {
+                            text: "📦";
+                            font-size: 10px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "Karantina (" + root.quarantine_list.length + ")";
+                            font-size: 11px;
+                            font-weight: root.active_view == 1 ? 700 : 500;
+                            color: root.quarantine_list.length > 0 ? #f43f5e : (root.active_view == 1 ? #f8fafc : #94a3b8);
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // Sekme 2: Ayarlar
+                Rectangle {
+                    height: 26px;
+                    border-radius: 5px;
+                    background: root.active_view == 2 ? #1e293b : transparent;
+                    y: 3px;
+
+                    TouchArea {
+                        clicked => { root.active_view = 2; }
+                    }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 4px;
+                        Text {
+                            text: "⚙️";
+                            font-size: 10px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "Ayarlar";
+                            font-size: 11px;
+                            font-weight: root.active_view == 2 ? 700 : 500;
+                            color: root.active_view == 2 ? #f8fafc : #94a3b8;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: #1e293b;
+        }
+
+        // ====================================================================
+        // GÖRÜNÜM 0: KORUMA (ANA EKRAN)
+        // ====================================================================
+        if root.active_view == 0: VerticalLayout {
+            padding: 12px;
+            spacing: 10px;
+
+            // 1. Sürücü Kartı (40px)
+            Rectangle {
+                height: 40px;
+                border-radius: 6px;
+                background: #111827;
+                border-width: 1px;
+                border-color: #1e293b;
+
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    alignment: space-between;
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+
+                        Text {
+                            text: root.current_drive.path != "" ? "💾" : "🔌";
+                            font-size: 16px;
+                            vertical-alignment: center;
+                        }
+
+                        Text {
+                            text: root.current_drive.path != "" ? 
+                                  root.current_drive.path + " [" + root.current_drive.fs_type + "]" : 
+                                  "USB Bekleniyor...";
+                            font-size: 12px;
+                            font-weight: 700;
+                            color: #f8fafc;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    // Durum Rozeti
+                    Rectangle {
+                        height: 20px;
+                        border-radius: 10px;
+                        background: root.current_drive.path == "" ? #1e293b :
+                                    (root.current_drive.is_immunized ? #064e3b : #78350f);
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        y: 10px;
+
+                        Text {
+                            text: root.current_drive.path == "" ? "BOŞTA" :
+                                  (root.current_drive.is_immunized ? "KORUMALI" : "KORUMASIZ");
+                            font-size: 9px;
+                            font-weight: 800;
+                            color: root.current_drive.path == "" ? #94a3b8 :
+                                   (root.current_drive.is_immunized ? #34d399 : #fcd34d);
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            // 2. Ana Aksiyon Butonu (48px)
+            Rectangle {
+                height: 48px;
+                border-radius: 8px;
+                background: root.scan_summary.is_running ? #334155 :
+                            (btn_main.has-hover ? #059669 : #10b981);
+
+                btn_main := TouchArea {
+                    clicked => {
+                        if (!root.scan_summary.is_running && root.current_drive.path != "") {
+                            root.quick_action_requested(root.current_drive.path);
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 8px;
+
+                    Text {
+                        text: root.scan_summary.is_running ? "⏳" : "⚡";
+                        font-size: 16px;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: root.scan_summary.is_running ? "Tarama Sürüyor..." : "TEK TIKLA TARA VE KORU";
+                        font-size: 12px;
+                        font-weight: 800;
+                        color: #ffffff;
+                        letter-spacing: 0.5px;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // 3. İki Hızlı Buton (38px)
+            HorizontalLayout {
+                spacing: 8px;
+
+                // Kök Kilidi
+                Rectangle {
+                    height: 38px;
+                    border-radius: 6px;
+                    background: btn_imm.has-hover ? #1e293b : #111827;
+                    border-width: 1px;
+                    border-color: #334155;
+
+                    btn_imm := TouchArea {
+                        clicked => {
+                            if (root.current_drive.path != "") {
+                                root.toggle_protection_requested(root.current_drive.path);
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 6px;
+                        Text {
+                            text: root.current_drive.is_immunized ? "🔓" : "🔒";
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: root.current_drive.is_immunized ? "Kilidi Aç" : "Kökü Kilitle";
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: #f1f5f9;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // Solucan Onar
+                Rectangle {
+                    height: 38px;
+                    border-radius: 6px;
+                    background: btn_clean.has-hover ? #1e293b : #111827;
+                    border-width: 1px;
+                    border-color: #334155;
+
+                    btn_clean := TouchArea {
+                        clicked => {
+                            if (root.current_drive.path != "") {
+                                root.clean_shortcuts_requested(root.current_drive.path);
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 6px;
+                        Text {
+                            text: "🧹";
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "Kısayol Onar";
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: #f1f5f9;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            // 4. Canlı Durum Şeridi (36px)
+            Rectangle {
+                height: 36px;
+                border-radius: 6px;
+                background: #020617;
+                border-width: 1px;
+                border-color: #1e293b;
+
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 6px;
+                    alignment: start;
+
+                    Text {
+                        text: "ℹ️";
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+
+                    Text {
+                        text: root.scan_summary.status_text;
+                        font-size: 10px;
+                        color: #94a3b8;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+
+        // ====================================================================
+        // GÖRÜNÜM 1: KARANTİNA YÖNETİMİ
+        // ====================================================================
+        if root.active_view == 1: VerticalLayout {
+            padding: 12px;
+            spacing: 8px;
+
+            ScrollView {
+                height: 330px;
+
+                VerticalLayout {
+                    spacing: 6px;
+
+                    if root.quarantine_list.length == 0: Rectangle {
+                        height: 120px;
+                        background: #111827;
+                        border-radius: 6px;
+
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 6px;
+                            Text {
+                                text: "🛡️";
+                                font-size: 20px;
+                                horizontal-alignment: center;
+                            }
+                            Text {
+                                text: "Karantina boş.";
+                                font-size: 12px;
+                                font-weight: 700;
+                                color: #f8fafc;
+                                horizontal-alignment: center;
+                            }
+                            Text {
+                                text: "Tehdit bulunamadı.";
+                                font-size: 10px;
+                                color: #64748b;
+                                horizontal-alignment: center;
+                            }
+                        }
+                    }
+
+                    for item in root.quarantine_list: Rectangle {
+                        height: 48px;
+                        border-radius: 6px;
+                        background: #111827;
+                        border-width: 1px;
+                        border-color: #1e293b;
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 6px;
+                            alignment: space-between;
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 1px;
+                                Text {
+                                    text: item.original_path;
+                                    font-size: 11px;
+                                    font-weight: 700;
+                                    color: #f8fafc;
+                                    overflow: elide;
+                                    max-width: 180px;
+                                }
+                                Text {
+                                    text: item.threat_reason;
+                                    font-size: 9px;
+                                    color: #f43f5e;
+                                    overflow: elide;
+                                    max-width: 180px;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 4px;
+                                alignment: end;
+
+                                // Geri Yükle
+                                Rectangle {
+                                    width: 58px;
+                                    height: 26px;
+                                    border-radius: 4px;
+                                    background: btn_res.has-hover ? #059669 : #065f46;
+                                    y: 11px;
+
+                                    btn_res := TouchArea {
+                                        clicked => {
+                                            root.restore_quarantine_requested(root.current_drive.path, item.id);
+                                        }
+                                    }
+
+                                    Text {
+                                        text: "Kurtar";
+                                        font-size: 10px;
+                                        font-weight: 700;
+                                        color: #ffffff;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                // Sil
+                                Rectangle {
+                                    width: 32px;
+                                    height: 26px;
+                                    border-radius: 4px;
+                                    background: btn_del.has-hover ? #dc2626 : #991b1b;
+                                    y: 11px;
+
+                                    btn_del := TouchArea {
+                                        clicked => {
+                                            root.delete_quarantine_requested(root.current_drive.path, item.id);
+                                        }
+                                    }
+
+                                    Text {
+                                        text: "🗑️";
+                                        font-size: 10px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ====================================================================
+        // GÖRÜNÜM 2: AYARLAR (SADE & BASİT)
+        // ====================================================================
+        if root.active_view == 2: VerticalLayout {
+            padding: 12px;
+            spacing: 8px;
+
+            // Ayar 1: Arka Plan Koruması
+            Rectangle {
+                height: 42px;
+                border-radius: 6px;
+                background: #111827;
+                border-width: 1px;
+                border-color: #1e293b;
+
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    alignment: space-between;
+
+                    Text {
+                        text: "Arka Plan Koruması (Otomatik Müdahale)";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: #f8fafc;
+                        vertical-alignment: center;
+                    }
+
+                    CheckBox {
+                        text: root.cfg_background_monitoring ? "Açık" : "Kapalı";
+                        checked: root.cfg_background_monitoring;
+                        toggled => {
+                            root.cfg_background_monitoring = !root.cfg_background_monitoring;
+                            root.auto_protect = root.cfg_background_monitoring;
+                            root.update_config_requested(
+                                root.cfg_background_monitoring,
+                                root.cfg_auto_suppress_explorer,
+                                root.cfg_enable_ntfs_immunization,
+                                root.cfg_create_portable_rescue
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Ayar 2: Explorer Baskılama
+            Rectangle {
+                height: 42px;
+                border-radius: 6px;
+                background: #111827;
+                border-width: 1px;
+                border-color: #1e293b;
+
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    alignment: space-between;
+
+                    Text {
+                        text: "Otomatik Gezgin Baskılama";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: #f8fafc;
+                        vertical-alignment: center;
+                    }
+
+                    CheckBox {
+                        text: root.cfg_auto_suppress_explorer ? "Açık" : "Kapalı";
+                        checked: root.cfg_auto_suppress_explorer;
+                        toggled => {
+                            root.cfg_auto_suppress_explorer = !root.cfg_auto_suppress_explorer;
+                            root.update_config_requested(
+                                root.cfg_background_monitoring,
+                                root.cfg_auto_suppress_explorer,
+                                root.cfg_enable_ntfs_immunization,
+                                root.cfg_create_portable_rescue
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Ayar 3: NTFS Kök Kilidi
+            Rectangle {
+                height: 42px;
+                border-radius: 6px;
+                background: #111827;
+                border-width: 1px;
+                border-color: #1e293b;
+
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    alignment: space-between;
+
+                    Text {
+                        text: "Yazma Koruması (NTFS Kök Kilidi)";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: #f8fafc;
+                        vertical-alignment: center;
+                    }
+
+                    CheckBox {
+                        text: root.cfg_enable_ntfs_immunization ? "Açık" : "Kapalı";
+                        checked: root.cfg_enable_ntfs_immunization;
+                        toggled => {
+                            root.cfg_enable_ntfs_immunization = !root.cfg_enable_ntfs_immunization;
+                            root.update_config_requested(
+                                root.cfg_background_monitoring,
+                                root.cfg_auto_suppress_explorer,
+                                root.cfg_enable_ntfs_immunization,
+                                root.cfg_create_portable_rescue
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Ayar 4: Kurtarma Ajanı
+            Rectangle {
+                height: 42px;
+                border-radius: 6px;
+                background: #111827;
+                border-width: 1px;
+                border-color: #1e293b;
+
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    alignment: space-between;
+
+                    Text {
+                        text: "Taşınabilir Kurtarma Ajanı Dağıt";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: #f8fafc;
+                        vertical-alignment: center;
+                    }
+
+                    CheckBox {
+                        text: root.cfg_create_portable_rescue ? "Açık" : "Kapalı";
+                        checked: root.cfg_create_portable_rescue;
+                        toggled => {
+                            root.cfg_create_portable_rescue = !root.cfg_create_portable_rescue;
+                            root.update_config_requested(
+                                root.cfg_background_monitoring,
+                                root.cfg_auto_suppress_explorer,
+                                root.cfg_enable_ntfs_immunization,
+                                root.cfg_create_portable_rescue
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

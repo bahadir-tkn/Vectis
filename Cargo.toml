@@ -1,0 +1,39 @@
+[package]
+name = "coresync-usb-gatekeeper"
+version = "0.1.0"
+edition = "2021"
+authors = ["CoreSync USB Gatekeeper Team"]
+description = "Ultra-lightweight offline external storage protection & immunization gatekeeper"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+slint = "=1.8.0"
+tray-icon = "0.19"
+
+[[bin]]
+name = "Vectis"
+path = "src/main.rs"
+
+[build-dependencies]
+slint-build = "=1.8.0"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Storage_FileSystem",
+    "Win32_System_LibraryLoader",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Console",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Memory",
+] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
